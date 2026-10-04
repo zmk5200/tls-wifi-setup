@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>ESP32-S3 信号灯 · 蓝牙配网</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --line: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --accent: #2f81f7;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 18px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--dim); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 6px; }
+  input[type=text], input[type=password] {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    color: var(--text);
+    background: #0d1117;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 14px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); font-weight: 500; }
+  .row { display: flex; gap: 10px; }
+  .row button { margin: 0; }
+  .kv { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 14px; }
+  .kv:last-child { border-bottom: 0; }
+  .kv span:first-child { color: var(--dim); flex: none; }
+  .kv span:last-child { text-align: right; word-break: break-all; }
+  .state { font-size: 20px; font-weight: 700; }
+  .s-wait { color: var(--accent); }
+  .s-linked, .s-conn { color: var(--warn); }
+  .s-ready { color: var(--ok); }
+  .s-error { color: var(--err); }
+  .s-off { color: var(--dim); }
+  pre {
+    margin: 0;
+    max-height: 190px;
+    overflow: auto;
+    font: 12px/1.6 ui-monospace, Consolas, monospace;
+    color: var(--dim);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .note { font-size: 13px; color: var(--dim); }
+  .note b { color: var(--text); }
+  .banner {
+    border-left: 3px solid var(--err);
+    background: rgba(248,81,73,.1);
+    padding: 12px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    margin-bottom: 14px;
+  }
+  .banner.hidden, .hidden { display: none; }
+  ol { margin: 8px 0 0; padding-left: 20px; color: var(--dim); font-size: 13px; }
+  ol li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>丁字路口信号灯 · 蓝牙配网</h1>
+<p class="sub">通过蓝牙把家里的 Wi-Fi 账号密码发给 ESP32-S3</p>
+
+<div id="unsupported" class="banner hidden"></div>
+
+<div class="card">
+  <h2>第 1 步 · 连接设备</h2>
+  <button id="btnConnect">扫描并连接</button>
+  <ol id="scanTips">
+    <li>给信号灯上电，屏幕上切到 <b>BT</b> 那一页</li>
+    <li>点上面的按钮，在弹窗里选 <b>TLS-Setup-xxxx</b></li>
+  </ol>
+</div>
+
+<div class="card" id="cardStatus">
+  <h2>设备状态</h2>
+  <div class="kv"><span>连接</span><span id="stLink">未连接</span></div>
+  <div class="kv"><span>设备名</span><span id="stName">—</span></div>
+  <div class="kv"><span>配网状态</span><span id="stState" class="state s-off">—</span></div>
+  <div class="kv"><span>设备回传</span><span id="stRaw">—</span></div>
+  <div class="kv"><span>MTU</span><span id="stMtu">—</span></div>
+</div>
+
+<div class="card">
+  <h2>第 2 步 · 发送 Wi-Fi 账号</h2>
+  <label for="ssid">Wi-Fi 名称（SSID）</label>
+  <input id="ssid" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32" placeholder="家里的 Wi-Fi 名字">
+  <label for="pass">Wi-Fi 密码</label>
+  <input id="pass" type="password" autocomplete="off" maxlength="64" placeholder="留空表示开放网络">
+  <button id="btnSend" disabled>发送并连接</button>
+  <p class="note" style="margin-top:12px">2.4 GHz 网络才行，ESP32-S3 不支持 5 GHz。名称和密码都是区分大小写的。</p>
+</div>
+
+<div class="card">
+  <h2>第 3 步 · 收尾</h2>
+  <div class="row">
+    <button id="btnForget" class="ghost" disabled>清除已保存的 Wi-Fi</button>
+  </div>
+  <p class="note" style="margin-top:12px">连接成功后，设备会记住这组账号，下次上电自动连接。</p>
+</div>
+
+<div class="card">
+  <h2>日志</h2>
+  <pre id="log">等待操作…</pre>
+</div>
+
+<script>
+const SERVICE_UUID = 0xfff0;
+const CHR = {
+  ssid: 0xfff1,
+  password: 0xfff2,
+  command: 0xfff3,
+  status: 0xfff4,
+};
+
+const $ = (id) => document.getElementById(id);
+const logBox = $('log');
+let chars = null;
+let device = null;
+let statusTimer = null;
+
+function log(msg) {
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  logBox.textContent = `[${t}] ${msg}\n` + logBox.textContent;
+}
+
+function setState(text, cls) {
+  const el = $('stState');
+  el.textContent = text;
+  el.className = 'state ' + (cls || 's-off');
+}
+
+function requireSupport() {
+  const banner = $('unsupported');
+  if (!window.isSecureContext) {
+    banner.className = 'banner';
+    banner.innerHTML = '这个页面不是通过 HTTPS 打开的，浏览器不允许使用蓝牙。请用 <b>https://</b> 开头的地址访问。';
+    return false;
+  }
+  if (!navigator.bluetooth) {
+    banner.className = 'banner';
+    banner.innerHTML = '当前浏览器不支持 Web 蓝牙。请用 <b>安卓手机上的 Chrome</b> 打开这个页面（iPhone 上的所有浏览器都不支持）。';
+    return false;
+  }
+  return true;
+}
+
+async function connect() {
+  if (!requireSupport()) return;
+  $('btnConnect').disabled = true;
+  try {
+    log('正在扫描，请在弹窗里选择 TLS-Setup-xxxx …');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }],
+    });
+    log('已选择：' + (device.name || '(无名)'));
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    const server = await device.gatt.connect();
+    log('GATT 已连接，正在获取服务…');
+
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    chars = {
+      ssid: await service.getCharacteristic(CHR.ssid),
+      password: await service.getCharacteristic(CHR.password),
+      command: await service.getCharacteristic(CHR.command),
+      status: await service.getCharacteristic(CHR.status),
+    };
+    log('服务就绪，可以发送 Wi-Fi 账号了');
+
+    $('stLink').textContent = '已连接';
+    $('stName').textContent = device.name || '(无名)';
+    $('btnSend').disabled = false;
+    $('btnForget').disabled = false;
+    $('scanTips').classList.add('hidden');
+
+    await pollStatus();
+    statusTimer = setInterval(pollStatus, 1200);
+  } catch (e) {
+    log('连接失败：' + (e.message || e));
+    $('btnConnect').disabled = false;
+  }
+}
+
+function onDisconnected() {
+  log('蓝牙连接已断开');
+  clearInterval(statusTimer);
+  chars = null;
+  $('stLink').textContent = '未连接';
+  $('btnConnect').disabled = false;
+  $('btnSend').disabled = true;
+  $('btnForget').disabled = true;
+  setState('断开', 's-off');
+}
+
+/** Keeps the on-screen status in step with what the board reports. */
+async function pollStatus() {
+  if (!chars) return;
+  try {
+    const value = await chars.status.readValue();
+    const text = new TextDecoder().decode(value).trim();
+    $('stRaw').textContent = text || '(空)';
+
+    const [head, ...rest] = text.split(/\s+/);
+    const tail = rest.join(' ');
+    switch (head) {
+      case 'wait':
+        setState('等待手机连接', 's-wait');
+        break;
+      case 'linked':
+        setState('已收到账号，待发送', 's-linked');
+        break;
+      case 'connecting':
+        setState('正在连接 ' + tail, 's-conn');
+        break;
+      case 'ok':
+        setState('配网成功 ' + tail, 's-ready');
+        break;
+      case 'error':
+        setState('失败：' + tail, 's-error');
+        break;
+      default:
+        setState(head || '—', 's-off');
+    }
+    if (chars.mtu !== undefined) $('stMtu').textContent = chars.mtu;
+  } catch (e) {
+    // A read can fail while the board is busy reconnecting Wi-Fi; the next
+    // poll a second later usually succeeds.
+  }
+}
+
+async function writeText(chr, text) {
+  const bytes = new TextEncoder().encode(text);
+  await chr.writeValue(bytes);
+  return bytes.length;
+}
+
+async function send() {
+  if (!chars) return;
+  const ssid = $('ssid').value.trim();
+  const pass = $('pass').value;
+
+  if (!ssid) {
+    log('请先填写 Wi-Fi 名称');
+    return;
+  }
+  if (ssid.length > 32) {
+    log('Wi-Fi 名称最多 32 个字符');
+    return;
+  }
+  if (pass.length > 63) {
+    log('Wi-Fi 密码最多 63 个字符');
+    return;
+  }
+
+  $('btnSend').disabled = true;
+  try {
+    log(`发送 SSID（${ssid.length} 字符）…`);
+    await writeText(chars.ssid, ssid);
+
+    log(`发送密码（${pass.length} 字符）…`);
+    await writeText(chars.password, pass);
+
+    log('通知设备开始连接…');
+    await writeText(chars.command, 'connect');
+
+    setState('正在连接 ' + ssid, 's-conn');
+    log('已发送。设备连上路由器后这里会变成"配网成功 + IP"。');
+  } catch (e) {
+    log('发送失败：' + (e.message || e));
+  } finally {
+    $('btnSend').disabled = false;
+  }
+}
+
+async function forget() {
+  if (!chars) return;
+  try {
+    await writeText(chars.command, 'clear');
+    log('已通知设备清除保存的 Wi-Fi 账号');
+    $('ssid').value = '';
+    $('pass').value = '';
+  } catch (e) {
+    log('清除失败：' + (e.message || e));
+  }
+}
+
+$('btnConnect').addEventListener('click', connect);
+$('btnSend').addEventListener('click', send);
+$('btnForget').addEventListener('click', forget);
+
+requireSupport();
+log('页面已就绪');
+</script>
+</body>
+</html>
